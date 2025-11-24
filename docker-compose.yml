@@ -1,0 +1,77 @@
+services:
+  flins_db:
+    image: postgres:15-alpine
+    container_name: flins_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flins_network
+
+  app:
+    image: ${DOCKER_USERNAME}/flins_backend
+    container_name: flins_app
+    env_file:
+      - .env
+    networks:
+      - flins_network
+    depends_on:
+      flins_db:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Ожидание готовности базы данных...' &&
+        until pg_isready -h flins_db -p 5432 -U ${POSTGRES_USER}; do
+          echo 'База данных не готова, ожидание...' &&
+          sleep 2
+        done &&
+        echo 'База данных готова!' &&
+        echo 'Выполнение миграций...' &&
+        python -m alembic upgrade head &&
+        echo 'Запуск FastAPI приложения...' &&
+        python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+  nginx:
+    image: nginx:alpine
+    container_name: flins_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./conf.d:/etc/nginx/conf.d
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - flins_network
+    depends_on:
+      - app
+  
+  telegram_bot:
+    image: ${DOCKER_USERNAME}/flins_bot
+    container_name: flins_bot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      BACKEND_API_URL: ${BACKEND_API_URL}
+      TELEGRAM_GROUP_LINK: ${TELEGRAM_GROUP_LINK}
+      BOT_API_KEY: ${BOT_API_KEY}
+    networks:
+      - flins_network
+    depends_on:
+      - app
+    restart: unless-stopped
+
+networks:
+  flins_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
